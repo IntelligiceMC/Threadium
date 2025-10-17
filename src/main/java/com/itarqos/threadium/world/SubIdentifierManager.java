@@ -15,21 +15,29 @@ import java.util.*;
 import com.itarqos.threadium.mixin.render.WorldRendererAccessor;
 
 /**
- * Tracks dirty vertical slices (subidentifiers) per chunk and schedules rerenders
+ * Tracks dirty quadrant slices (subidentifiers) per chunk and schedules rerenders
  * only when the slice becomes visible to the player (just-in-time meshing).
+ *
+ * New slicing scheme:
+ * - 4 slices per chunk (2x2 in XZ), each slice is 8x8 blocks in XZ spanning the full vertical range.
+ * - Slice index mapping (local X/Z inside chunk, 0..15):
+ *   sx = (x & 15) >> 3, sz = (z & 15) >> 3, sliceIndex = (sz << 1) | sx  // 0..3
  */
 public final class SubIdentifierManager {
     private static final SubIdentifierManager INSTANCE = new SubIdentifierManager();
 
     public static SubIdentifierManager get() { return INSTANCE; }
 
-    private final Map<ChunkId, BitSet> dirtySlices = new HashMap<>(); // 16 slices per chunk (0..15)
-    private final Map<ChunkId, int[]> sliceNonAirCounts = new HashMap<>(); // 16-length arrays
+    private final Map<ChunkId, BitSet> dirtySlices = new HashMap<>(); // 4 slices per chunk (0..3)
+    private final Map<ChunkId, int[]> sliceNonAirCounts = new HashMap<>(); // 4-length arrays
+    // For each chunk, maintain per-slice (0..3) set of valid (non-air) blocks within that slice
+    private final Map<ChunkId, java.util.HashSet<Long>[]> sliceValidBlocks = new HashMap<>();
     private final Map<SectionKey, Long> lastScheduledMs = new HashMap<>();
 
     // Visibility cache & gradual unhide state
     private long frameCounter = 0L;
     private final Map<SectionKey, Long> lastVisibleFrame = new HashMap<>();
+    // Queue of section origins to gradually unhide/schedule (BlockPos aligned to 16x16x16 section origins)
     private final Deque<BlockPos> pendingUnhide = new ArrayDeque<>();
 
     private SubIdentifierManager() {}
@@ -37,34 +45,49 @@ public final class SubIdentifierManager {
     public void markBlockChanged(BlockPos pos) {
         ChunkPos cp = new ChunkPos(pos);
         ChunkId id = new ChunkId(cp.x, cp.z);
-        int slice = Math.max(0, Math.min(15, pos.getY() >> 4));
-        dirtySlices.computeIfAbsent(id, k -> new BitSet(16)).set(slice);
+        int slice = SliceIndexing.computeSliceIndex(pos);
+        dirtySlices.computeIfAbsent(id, k -> new BitSet(4)).set(slice);
     }
 
     // Called from mixin when old/new states are known
     public void onBlockStateChanged(BlockPos pos, boolean oldWasAir, boolean newIsAir) {
         ChunkPos cp = new ChunkPos(pos);
         ChunkId id = new ChunkId(cp.x, cp.z);
-        int slice = Math.max(0, Math.min(15, pos.getY() >> 4));
-        dirtySlices.computeIfAbsent(id, k -> new BitSet(16)).set(slice);
-        int[] counts = sliceNonAirCounts.computeIfAbsent(id, k -> new int[16]);
+        int slice = SliceIndexing.computeSliceIndex(pos);
+        dirtySlices.computeIfAbsent(id, k -> new BitSet(4)).set(slice);
+        int[] counts = sliceNonAirCounts.computeIfAbsent(id, k -> new int[4]);
         if (oldWasAir && !newIsAir) {
             counts[slice] = Math.max(0, counts[slice] + 1);
+            // track valid (non-air) block inside this slice
+            java.util.HashSet<Long>[] arr = sliceValidBlocks.computeIfAbsent(id, k -> {
+                @SuppressWarnings("unchecked")
+                java.util.HashSet<Long>[] a = new java.util.HashSet[4];
+                return a;
+            });
+            if (arr[slice] == null) arr[slice] = new java.util.HashSet<>();
+            arr[slice].add(BlockPos.asLong(pos.getX(), pos.getY(), pos.getZ()));
         } else if (!oldWasAir && newIsAir) {
             counts[slice] = Math.max(0, counts[slice] - 1);
+            java.util.HashSet<Long>[] arr = sliceValidBlocks.get(id);
+            if (arr != null && arr[slice] != null) {
+                arr[slice].remove(BlockPos.asLong(pos.getX(), pos.getY(), pos.getZ()));
+            }
         }
     }
 
     private boolean isSliceEmpty(ChunkId id, int slice) {
         int[] counts = sliceNonAirCounts.get(id);
         if (counts == null) return false; // unknown -> assume non-empty to be safe
-        return counts[slice] <= 0;
+        if (counts[slice] > 0) return false;
+        java.util.HashSet<Long>[] arr = sliceValidBlocks.get(id);
+        if (arr == null || arr[slice] == null) return true;
+        return arr[slice].isEmpty();
     }
 
-    private boolean debounce(ChunkId id, int sliceY) {
+    private boolean debounce(ChunkId id, int sliceIndex) {
         long now = System.currentTimeMillis();
         int debounceMs = ThreadiumClient.CONFIG != null ? Math.max(0, ThreadiumClient.CONFIG.sliceDebounceMillis) : 200;
-        SectionKey key = new SectionKey(id.x(), sliceY, id.z());
+        SectionKey key = new SectionKey(id.x(), sliceIndex, id.z());
         Long last = lastScheduledMs.get(key);
         if (last != null && (now - last) < debounceMs) {
             return true; // should debounce
@@ -77,10 +100,13 @@ public final class SubIdentifierManager {
      * Mark a section as visible on this frame (called when scheduleSectionRender is not cancelled).
      */
     public void markSectionVisible(BlockPos pos) {
-        int slice = Math.max(0, Math.min(15, pos.getY() >> 4));
+        // scheduleSectionRender is per 16x16 section (covers all quadrants in XZ).
+        // Mark all quadrant slices of this chunk as visible this frame.
         ChunkPos cp = new ChunkPos(pos);
-        SectionKey key = new SectionKey(cp.x, slice, cp.z);
-        lastVisibleFrame.put(key, frameCounter);
+        for (int s = 0; s < 4; s++) {
+            SectionKey key = new SectionKey(cp.x, s, cp.z);
+            lastVisibleFrame.put(key, frameCounter);
+        }
     }
 
     public void flushVisible() {
@@ -100,13 +126,21 @@ public final class SubIdentifierManager {
                 ChunkId id = e.getKey();
                 BitSet bits = e.getValue();
                 if (bits.isEmpty()) { itAll.remove(); continue; }
+                java.util.HashSet<Long>[] arr = sliceValidBlocks.get(id);
                 for (int slice = bits.nextSetBit(0); slice >= 0; slice = bits.nextSetBit(slice + 1)) {
-                    int yCenter = (slice << 4) + 8;
-                    int xBlock = (id.x() << 4) + 8;
-                    int zBlock = (id.z() << 4) + 8;
-                    BlockPos pos = new BlockPos(xBlock, yCenter, zBlock);
-                    ((WorldRendererAccessor) wr).threadium$invokeScheduleSectionRender(pos, false);
-                    CullingStats.incSliceFlushed();
+                    // dedupe to section origins and schedule all
+                    java.util.LinkedHashSet<BlockPos> sectionOrigins = new java.util.LinkedHashSet<>();
+                    if (arr != null && arr[slice] != null) {
+                        for (long lp : arr[slice]) {
+                            BlockPos bp = BlockPos.fromLong(lp);
+                            BlockPos origin = new BlockPos((bp.getX() >> 4) << 4, (bp.getY() >> 4) << 4, (bp.getZ() >> 4) << 4);
+                            sectionOrigins.add(origin);
+                        }
+                    }
+                    for (BlockPos origin : sectionOrigins) {
+                        ((WorldRendererAccessor) wr).threadium$invokeScheduleSectionRender(origin, false);
+                        CullingStats.incSliceFlushed();
+                    }
                 }
                 itAll.remove();
             }
@@ -166,13 +200,13 @@ public final class SubIdentifierManager {
             BitSet bits = e.getValue();
             if (bits.isEmpty()) { it.remove(); continue; }
 
-            // For each dirty slice, pick the center of the slice inside the chunk to test visibility
+            // For each dirty slice, pick the center of the corresponding XZ quadrant to test visibility
             for (int slice = bits.nextSetBit(0); slice >= 0; slice = bits.nextSetBit(slice + 1)) {
-                int yMin = slice << 4;
-                int yCenter = yMin + 8;
-                int xBlock = (id.x() << 4) + 8;
-                int zBlock = (id.z() << 4) + 8;
-                Vec3d target = new Vec3d(xBlock + 0.5, yCenter + 0.5, zBlock + 0.5);
+                // quadrant centers
+                int[] cxz = SliceIndexing.quadrantCenterXZ(id, slice);
+                // choose Y near camera for better angle/distance heuristic
+                int yCenter = (int)Math.round(camPos.y);
+                Vec3d target = new Vec3d(cxz[0] + 0.5, yCenter + 0.5, cxz[1] + 0.5);
 
                 boolean culledBehind = CullingUtil.shouldCullByAngleAndDistance(
                         camPos, forward, target,
@@ -205,24 +239,38 @@ public final class SubIdentifierManager {
                         bits.clear(slice);
                         continue;
                     }
-                    // Debounce to avoid thrash
+                    // Debounce to avoid thrash (per-slice index 0..3)
                     if (debounce(id, slice)) {
                         CullingStats.incSliceDebounced();
                         continue;
                     }
                     // Visible: either gradual-unhide queue or candidate list
-                    BlockPos pos = new BlockPos(xBlock, yCenter, zBlock);
+                    BlockPos pos = new BlockPos(cxz[0], yCenter, cxz[1]);
                     boolean useGradual = ThreadiumClient.CONFIG != null && ThreadiumClient.CONFIG.enableVisibilityDeprioritization;
                     int threshold = ThreadiumClient.CONFIG != null ? Math.max(0, ThreadiumClient.CONFIG.hiddenDeprioritizeFrames) : 30;
                     SectionKey key = new SectionKey(id.x(), slice, id.z());
                     long lastSeen = lastVisibleFrame.getOrDefault(key, frameCounter);
                     long hiddenFor = frameCounter - lastSeen;
                     if (useGradual && hiddenFor >= threshold) {
-                        pendingUnhide.addLast(pos);
+                        // Convert slice's valid blocks into unique section origins and queue them
+                        java.util.HashSet<Long>[] arr = sliceValidBlocks.get(id);
+                        java.util.LinkedHashSet<BlockPos> sectionOrigins = new java.util.LinkedHashSet<>();
+                        if (arr != null && arr[slice] != null) {
+                            for (long lp : arr[slice]) {
+                                BlockPos bp = BlockPos.fromLong(lp);
+                                BlockPos origin = new BlockPos((bp.getX() >> 4) << 4, (bp.getY() >> 4) << 4, (bp.getZ() >> 4) << 4);
+                                sectionOrigins.add(origin);
+                            }
+                        }
+                        for (BlockPos origin : sectionOrigins) {
+                            pendingUnhide.addLast(origin);
+                        }
                         bits.clear(slice);
+                        // we've enqueued work; clear tracked set for this slice
+                        if (arr != null && arr[slice] != null) arr[slice].clear();
                     } else {
                         // Screen-impact heuristic score: prefer closer and more forward-aligned slices
-                        Vec3d to = new Vec3d(xBlock + 0.5, yCenter + 0.5, zBlock + 0.5).subtract(camPos);
+                        Vec3d to = new Vec3d(cxz[0] + 0.5, yCenter + 0.5, cxz[1] + 0.5).subtract(camPos);
                         double len = to.length();
                         double invDist = 1.0 / (1.0 + len);
                         Vec3d toN = len > 1e-4 ? to.multiply(1.0 / len) : new Vec3d(0,0,0);
@@ -245,13 +293,32 @@ public final class SubIdentifierManager {
             int scheduled = 0;
             for (int i = 0; i < candidates.size() && scheduled < sliceBudget; i++) {
                 Cand c = candidates.get(i);
-                ((WorldRendererAccessor) wr).threadium$invokeScheduleSectionRender(c.pos, false);
-                CullingStats.incSliceFlushed();
-                BitSet bits = dirtySlices.get(c.id);
-                if (bits != null) {
-                    bits.clear(c.slice);
+                // Convert this slice's tracked valid blocks into unique section origins
+                java.util.HashSet<Long>[] arr = sliceValidBlocks.get(c.id);
+                java.util.LinkedHashSet<BlockPos> sectionOrigins = new java.util.LinkedHashSet<>();
+                if (arr != null && arr[c.slice] != null) {
+                    for (long lp : arr[c.slice]) {
+                        BlockPos bp = BlockPos.fromLong(lp);
+                        BlockPos origin = new BlockPos((bp.getX() >> 4) << 4, (bp.getY() >> 4) << 4, (bp.getZ() >> 4) << 4);
+                        sectionOrigins.add(origin);
+                    }
                 }
-                scheduled++;
+                // Schedule within remaining budget
+                java.util.Iterator<BlockPos> itSec = sectionOrigins.iterator();
+                while (itSec.hasNext() && scheduled < sliceBudget) {
+                    BlockPos origin = itSec.next();
+                    ((WorldRendererAccessor) wr).threadium$invokeScheduleSectionRender(origin, false);
+                    CullingStats.incSliceFlushed();
+                    scheduled++;
+                }
+                // Clear this slice's dirty bit and tracked blocks if all scheduled; otherwise keep dirty for next tick
+                if (!itSec.hasNext()) {
+                    BitSet bits = dirtySlices.get(c.id);
+                    if (bits != null) {
+                        bits.clear(c.slice);
+                    }
+                    if (arr != null && arr[c.slice] != null) arr[c.slice].clear();
+                }
             }
         }
         // Prune emptied entries
@@ -284,6 +351,7 @@ public final class SubIdentifierManager {
         ChunkId id = ChunkId.of(pos);
         dirtySlices.remove(id);
         sliceNonAirCounts.remove(id);
+        sliceValidBlocks.remove(id);
         // prune any debounced keys that belong to this chunk
         lastScheduledMs.entrySet().removeIf(entry -> {
             SectionKey k = entry.getKey();
@@ -303,49 +371,13 @@ public final class SubIdentifierManager {
     public void onWorldReset() {
         dirtySlices.clear();
         sliceNonAirCounts.clear();
+        sliceValidBlocks.clear();
         lastScheduledMs.clear();
         lastVisibleFrame.clear();
         pendingUnhide.clear();
         frameCounter = 0L;
     }
 
-    /**
-     * Simple immutable key for identifying a chunk slice by chunk X/Z and slice Y index (0..15).
-     */
-    private static final class SectionKey {
-        private final int x;
-        private final int sliceY;
-        private final int z;
-
-        private SectionKey(int x, int sliceY, int z) {
-            this.x = x;
-            this.sliceY = sliceY;
-            this.z = z;
-        }
-
-        @Override
-        public boolean equals(Object o) {
-            if (this == o) return true;
-            if (o == null || getClass() != o.getClass()) return false;
-            SectionKey that = (SectionKey) o;
-            return x == that.x && sliceY == that.sliceY && z == that.z;
-        }
-
-        @Override
-        public int hashCode() {
-            int result = Integer.hashCode(x);
-            result = 31 * result + Integer.hashCode(sliceY);
-            result = 31 * result + Integer.hashCode(z);
-            return result;
-        }
-
-        @Override
-        public String toString() {
-            return "SectionKey{" +
-                    "x=" + x +
-                    ", sliceY=" + sliceY +
-                    ", z=" + z +
-                    '}';
-        }
-    }
+    // SectionKey is now a top-level class in this package.
+    // Slice index utilities are provided by SliceIndexing.
 }
