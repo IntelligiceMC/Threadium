@@ -3,9 +3,9 @@
 	"id": "threadium",
 	"version": "${version}",
 	"name": "Threadium",
-	"description": "This is an example description! Tell everyone what your mod is about!",
+	"description": "Threadium is a mod that reduces wasted rendering work by skipping or delaying things the player can’t see, spreading expensive updates over time, and keeping particle spawn under control so the game stays smoother",
 	"authors": [
-		"Me!"
+		"itarqos5"
 	],
 	"contact": {
 		"homepage": "https://fabricmc.net/",

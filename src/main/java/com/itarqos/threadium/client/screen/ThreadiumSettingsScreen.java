@@ -29,7 +29,7 @@ public class ThreadiumSettingsScreen extends Screen {
     private double sbThumbY, sbThumbH;
 
     private enum Category {
-        ENTITIES, WORLD, ADVANCED
+        ENTITIES, WORLD, RENDER, ADVANCED, EXTRA
     }
 
     private class TargetFpsSlider extends SliderWidget {
@@ -165,9 +165,12 @@ public class ThreadiumSettingsScreen extends Screen {
         // Tabs
         int tabsY = this.height / 6 - 8;
         int center = this.width / 2;
-        addTab(center - 170, tabsY, 110, Category.ENTITIES, Text.translatable("threadium.settings.tab.entities").getString());
-        addTab(center - 40, tabsY, 110, Category.WORLD, Text.translatable("threadium.settings.tab.world").getString());
-        addTab(center + 90, tabsY, 110, Category.ADVANCED, Text.translatable("threadium.settings.tab.advanced").getString());
+        int baseX = center - 260; // space for five tabs
+        addTab(baseX + 0, tabsY, 110, Category.ENTITIES, Text.translatable("threadium.settings.tab.entities").getString());
+        addTab(baseX + 130, tabsY, 110, Category.WORLD, Text.translatable("threadium.settings.tab.world").getString());
+        addTab(baseX + 260, tabsY, 110, Category.RENDER, Text.translatable("threadium.settings.tab.render").getString());
+        addTab(baseX + 390, tabsY, 110, Category.ADVANCED, Text.translatable("threadium.settings.tab.advanced").getString());
+        addTab(baseX + 520, tabsY, 110, Category.EXTRA, Text.translatable("threadium.settings.tab.extra").getString());
 
         int left = this.width / 2 - 155;
         int colW = 310;
@@ -249,24 +252,70 @@ public class ThreadiumSettingsScreen extends Screen {
                   .dimensions(left, y, colW, 20).build(), y, 20, visibleTop, visibleBottom);
                 y += 24;
             }
-            case ADVANCED -> {
-                // Overlay toggle
-                addIfVisible(ButtonWidget.builder(overlayLabel(), b -> {
-                    cfg.showCullingOverlay = !cfg.showCullingOverlay;
-                    b.setMessage(overlayLabel());
+            case RENDER -> {
+                // Render scheduler toggle
+                addIfVisible(ButtonWidget.builder(renderSchedulerLabel(), b -> {
+                    cfg.enableRenderScheduler = !cfg.enableRenderScheduler;
+                    b.setMessage(renderSchedulerLabel());
                     ThreadiumClient.saveConfig();
-                }).tooltip(Tooltip.of(Text.translatable("threadium.tooltip.overlay")))
+                }).tooltip(Tooltip.of(Text.translatable("threadium.tooltip.render_scheduler")))
                   .dimensions(left, y, colW, 20).build(), y, 20, visibleTop, visibleBottom);
                 y += 24;
 
-                // Debug mode toggle (forces counters even without F3)
-                addIfVisible(ButtonWidget.builder(debugModeLabel(), b -> {
-                    cfg.enableDebugMode = !cfg.enableDebugMode;
-                    b.setMessage(debugModeLabel());
+                // Screen-space budgeter toggle & slice budget per tick
+                addIfVisible(ButtonWidget.builder(screenSpaceBudgeterLabel(), b -> {
+                    cfg.enableScreenSpaceBudgeter = !cfg.enableScreenSpaceBudgeter;
+                    b.setMessage(screenSpaceBudgeterLabel());
                     ThreadiumClient.saveConfig();
-                }).tooltip(Tooltip.of(Text.translatable("threadium.tooltip.debug_mode")))
+                }).tooltip(Tooltip.of(Text.translatable("threadium.tooltip.screen_space_budgeter")))
                   .dimensions(left, y, colW, 20).build(), y, 20, visibleTop, visibleBottom);
                 y += 24;
+                addIfVisible(new SliceBudgetSlider(left, y, colW, 20, cfg.sliceBudgetPerTick), y, 20, visibleTop, visibleBottom);
+                y += 28;
+                // LOD throttling toggle
+                addIfVisible(ButtonWidget.builder(lodThrottlingLabel(), b -> {
+                    cfg.lodThrottlingEnabled = !cfg.lodThrottlingEnabled;
+                    b.setMessage(lodThrottlingLabel());
+                    ThreadiumClient.saveConfig();
+                }).tooltip(Tooltip.of(Text.translatable("threadium.tooltip.lod_throttling")))
+                  .dimensions(left, y, colW, 20).build(), y, 20, visibleTop, visibleBottom);
+                y += 24;
+
+                // Partial meshing master toggle
+                addIfVisible(ButtonWidget.builder(partialMeshingLabel(), b -> {
+                    cfg.enablePartialMeshing = !cfg.enablePartialMeshing;
+                    b.setMessage(partialMeshingLabel());
+                    ThreadiumClient.saveConfig();
+                }).tooltip(Tooltip.of(Text.translatable("threadium.tooltip.partial_meshing")))
+                  .dimensions(left, y, colW, 20).build(), y, 20, visibleTop, visibleBottom);
+                y += 24;
+
+                // Frustum hysteresis slider (0..6 ticks)
+                addIfVisible(new HysteresisSlider(left, y, colW, 20, cfg.frustumHysteresisTicks), y, 20, visibleTop, visibleBottom);
+                y += 28;
+
+                // Slice debounce slider (50..600 ms)
+                addIfVisible(new DebounceSlider(left, y, colW, 20, cfg.sliceDebounceMillis), y, 20, visibleTop, visibleBottom);
+                y += 28;
+
+                // Micro-stutter guard toggle & threshold
+                addIfVisible(ButtonWidget.builder(microStutterLabel(), b -> {
+                    cfg.enableMicroStutterGuard = !cfg.enableMicroStutterGuard;
+                    b.setMessage(microStutterLabel());
+                    ThreadiumClient.saveConfig();
+                }).tooltip(Tooltip.of(Text.translatable("threadium.tooltip.micro_stutter_guard")))
+                  .dimensions(left, y, colW, 20).build(), y, 20, visibleTop, visibleBottom);
+                y += 24;
+                addIfVisible(new MicroStutterThresholdSlider(left, y, colW, 20, cfg.microStutterThresholdMs), y, 20, visibleTop, visibleBottom);
+                y += 28;
+
+                // QoS controller: target FPS & aggressiveness
+                addIfVisible(new TargetFpsSlider(left, y, colW, 20, cfg.targetFps), y, 20, visibleTop, visibleBottom);
+                y += 28;
+                addIfVisible(new QosAggressivenessSlider(left, y, colW, 20, (float)cfg.qosAggressiveness), y, 20, visibleTop, visibleBottom);
+                y += 28;
+            }
+            case ADVANCED -> {
 
                 // Predictive prefetch
                 addIfVisible(ButtonWidget.builder(predictivePrefetchLabel(), b -> {
@@ -416,6 +465,33 @@ public class ThreadiumSettingsScreen extends Screen {
                 y += 28;
                 addIfVisible(new ParticleTileSizeSlider(left, y, colW, 20, cfg.particleTileSize), y, 20, visibleTop, visibleBottom);
                 y += 28;
+            }
+            case EXTRA -> {
+                // Overlay toggle
+                addIfVisible(ButtonWidget.builder(overlayLabel(), b -> {
+                    cfg.showCullingOverlay = !cfg.showCullingOverlay;
+                    b.setMessage(overlayLabel());
+                    ThreadiumClient.saveConfig();
+                }).tooltip(Tooltip.of(Text.translatable("threadium.tooltip.overlay")))
+                  .dimensions(left, y, colW, 20).build(), y, 20, visibleTop, visibleBottom);
+                y += 24;
+
+                // Overlay position cycle
+                addIfVisible(ButtonWidget.builder(overlayPositionLabel(), b -> {
+                    cfg.overlayPosition = nextOverlayPosition(cfg.overlayPosition);
+                    b.setMessage(overlayPositionLabel());
+                    ThreadiumClient.saveConfig();
+                }).dimensions(left, y, colW, 20).build(), y, 20, visibleTop, visibleBottom);
+                y += 24;
+
+                // Debug mode toggle (forces counters even without F3)
+                addIfVisible(ButtonWidget.builder(debugModeLabel(), b -> {
+                    cfg.enableDebugMode = !cfg.enableDebugMode;
+                    b.setMessage(debugModeLabel());
+                    ThreadiumClient.saveConfig();
+                }).tooltip(Tooltip.of(Text.translatable("threadium.tooltip.debug_mode")))
+                  .dimensions(left, y, colW, 20).build(), y, 20, visibleTop, visibleBottom);
+                y += 24;
             }
         }
 
@@ -621,6 +697,26 @@ public class ThreadiumSettingsScreen extends Screen {
 
     private Text particleTileBudgetLabel() {
         return Text.translatable("threadium.settings.particle_tile_budget", Text.translatable(cfg.enableParticleTileBudget ? "threadium.common.on" : "threadium.common.off"));
+    }
+
+    private Text overlayPositionLabel() {
+        return Text.translatable("threadium.settings.overlay_position", overlayPositionValue());
+    }
+
+    private Text overlayPositionValue() {
+        return switch (cfg.overlayPosition) {
+            case TOP_LEFT -> Text.translatable("threadium.overlay.top_left");
+            case TOP_RIGHT -> Text.translatable("threadium.overlay.top_right");
+            case BOTTOM_LEFT -> Text.translatable("threadium.overlay.bottom_left");
+            case BOTTOM_RIGHT -> Text.translatable("threadium.overlay.bottom_right");
+            case CENTER -> Text.translatable("threadium.overlay.center");
+        };
+    }
+
+    private static ThreadiumConfig.OverlayPosition nextOverlayPosition(ThreadiumConfig.OverlayPosition p) {
+        ThreadiumConfig.OverlayPosition[] vals = ThreadiumConfig.OverlayPosition.values();
+        int i = (p.ordinal() + 1) % vals.length;
+        return vals[i];
     }
 
     private class DistanceSlider extends SliderWidget {

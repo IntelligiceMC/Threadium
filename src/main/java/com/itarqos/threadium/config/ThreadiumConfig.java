@@ -9,11 +9,19 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
     public class ThreadiumConfig {
+    public enum OverlayPosition {
+        TOP_LEFT,
+        TOP_RIGHT,
+        BOTTOM_LEFT,
+        BOTTOM_RIGHT,
+        CENTER
+    }
     // Legacy/general flags (kept for compatibility)
     public boolean enableEntityCulling = true;          // master switch for entity culling behaviors
     public boolean enableChunkCulling = true;            // master switch for chunk-related culling
     public double entityCullingDistance = 96.0;          // unused by hidden-culling, kept for compatibility
     public boolean showCullingOverlay = true;            // when true, we render FPS overlay
+    public OverlayPosition overlayPosition = OverlayPosition.TOP_LEFT; // FPS overlay anchor position
     public boolean enableDebugMode = false;              // when true, always show debug counters even without F3
 
     // New fine-grained controls

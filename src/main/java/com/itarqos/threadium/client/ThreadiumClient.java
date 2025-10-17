@@ -43,6 +43,21 @@ public class ThreadiumClient implements ClientModInitializer {
                 String msg = "FPS: " + fps;
                 int x = 4;
                 int y = 4;
+                int sw = context.getScaledWindowWidth();
+                int sh = context.getScaledWindowHeight();
+                int tw = mc.textRenderer.getWidth(msg);
+                int th = 10; // approx line height
+
+                ThreadiumConfig.OverlayPosition pos = CONFIG.overlayPosition;
+                if (pos != null) {
+                    switch (pos) {
+                        case TOP_LEFT -> { x = 4; y = 4; }
+                        case TOP_RIGHT -> { x = sw - tw - 4; y = 4; }
+                        case BOTTOM_LEFT -> { x = 4; y = sh - th - 4; }
+                        case BOTTOM_RIGHT -> { x = sw - tw - 4; y = sh - th - 4; }
+                        case CENTER -> { x = (sw - tw) / 2; y = (sh - th) / 2; }
+                    }
+                }
                 context.drawTextWithShadow(mc.textRenderer, msg, x, y, 0xFFFFFF);
             }
 
@@ -59,7 +74,8 @@ public class ThreadiumClient implements ClientModInitializer {
             if (showCounters) {
                 int x = 4;
                 // Stack below either FPS (if shown) or start at top-left if not
-                int yStart = (CONFIG != null && CONFIG.showCullingOverlay) ? 4 + 12 : 4;
+                boolean overlayTopLeft = CONFIG != null && CONFIG.showCullingOverlay && CONFIG.overlayPosition == ThreadiumConfig.OverlayPosition.TOP_LEFT;
+                int yStart = overlayTopLeft ? 4 + 12 : 4;
                 int line = yStart;
                 context.drawTextWithShadow(mc.textRenderer, "Entities Culled: " + com.itarqos.threadium.util.CullingStats.getEntitiesCulled(), x, line, 0xA0FFA0);
                 line += 10;
