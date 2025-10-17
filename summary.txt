@@ -1,0 +1,49 @@
+Threadium – What it Actually Changes
+
+Scope
+- Client-side only.
+- Changes how rendering is done; does not change game rules, server logic, physics, AI, loot, or world generation.
+- Focus: which entities and block-entities are drawn, when chunk slices get updated, particle spawning, and keeping frame times steady.
+
+Main systems
+
+1) Movement-aware culling
+- Decides whether to draw mobs, block-entities, and other objects based on where the player is looking and how fast they move.
+- Objects behind the player or far away are rendered less or not at all.
+- Optional vertical culling skips things far above or below the camera.
+- Far objects may update less often to save processing.
+- Tracks stats for how many objects are skipped.
+
+2) Chunk-slice handling and partial updating
+- The world is handled in vertical slices; slices can be tracked and updated independently.
+- Slices that are behind or far away are not updated immediately.
+- Only slices likely to be seen soon are scheduled for update.
+- A small forward prediction area helps prepare slices that will appear next.
+- Updates are spread across frames to avoid spikes.
+- Hidden slices are gradually re-enabled to reduce popping.
+
+3) Camera/visibility adjustments
+- Slices and chunk boxes above/below the camera can be skipped when allowed.
+- Objects just outside the view are kept visible briefly to avoid flicker.
+- Distance and behind/far cutoffs adjust with movement so things feel stable when moving quickly.
+
+4) Frame-time and micro-stutter handling
+- Monitors frame time and smooths measurements over time.
+- When frames run long, the system reduces new work temporarily to avoid worsening stutter.
+- Controls how many slices, particles, and updates happen each tick based on a budget.
+
+5) Particles: grouping and budgeting
+- Groups particles per area and limits spawns per tile to reduce load.
+- Particles become sparser and smaller with distance.
+- Optional stutter guard can drop optional spawns after a long frame.
+- Renders particles in batches for efficiency.
+
+What it feels like in-game
+- Far or behind content is cheaper to render.
+- Chunk slices that matter are prioritized; others are deferred.
+- Edge-of-screen items stay visible briefly to prevent flicker.
+- Particle-heavy scenes are throttled by distance and per-area limits.
+- Generally smoother, more consistent FPS, especially when moving or in dense scenes.
+
+Simple summary
+Threadium reduces wasted rendering work by skipping or delaying things the player can’t see, spreading expensive updates over time, and keeping particle spawn under control so the game stays smoother.

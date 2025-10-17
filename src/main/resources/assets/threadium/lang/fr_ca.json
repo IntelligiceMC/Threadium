@@ -1,0 +1,10 @@
+{
+  "threadium.settings.title": "Paramètres Threadium",
+  "threadium.settings.tab.entities": "Entités",
+  "threadium.settings.tab.world": "Monde",
+  "threadium.settings.tab.advanced": "Avancé",
+  "threadium.settings.done": "Terminé",
+
+  "threadium.common.on": "Activé",
+  "threadium.common.off": "Désactivé"
+}
