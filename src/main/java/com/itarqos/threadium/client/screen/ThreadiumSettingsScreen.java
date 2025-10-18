@@ -10,6 +10,8 @@ import net.minecraft.client.gui.widget.ButtonWidget;
 import net.minecraft.client.gui.widget.SliderWidget;
 import net.minecraft.client.gui.tooltip.Tooltip;
 import net.minecraft.text.Text;
+import net.minecraft.registry.Registries;
+import net.minecraft.util.Identifier;
 
 public class ThreadiumSettingsScreen extends Screen {
     private final Screen parent;
@@ -29,7 +31,83 @@ public class ThreadiumSettingsScreen extends Screen {
     private double sbThumbY, sbThumbH;
 
     private enum Category {
-        ENTITIES, WORLD, RENDER, ADVANCED, EXTRA
+        ENTITIES, WORLD, RENDER, PARTICLES, ADVANCED, EXTRA
+    }
+
+    private enum ParticleMode { ALL_ON, ALL_OFF, CUSTOM }
+
+    private ParticleMode getParticleMode() {
+        if (cfg == null) return ParticleMode.ALL_ON;
+        if (cfg.disableAllParticles) return ParticleMode.ALL_OFF;
+        return cfg.disabledParticleIds.isEmpty() ? ParticleMode.ALL_ON : ParticleMode.CUSTOM;
+    }
+
+    private void setParticleMode(ParticleMode mode) {
+        if (cfg == null) return;
+        switch (mode) {
+            case ALL_ON -> {
+                cfg.disableAllParticles = false;
+                cfg.disabledParticleIds.clear();
+            }
+            case ALL_OFF -> {
+                cfg.disableAllParticles = true;
+            }
+            case CUSTOM -> {
+                cfg.disableAllParticles = false;
+            }
+        }
+        ThreadiumClient.saveConfig();
+    }
+
+    // Responsive layout helpers
+    private int getTabsY() { return 36; }
+    private int getTabGap() { return 6; }
+    private int getTabHeight() { return 20; }
+    private int getContentWidth() { return Math.max(160, Math.min(420, this.width - 16)); }
+    private int getContentLeft() { return Math.max(8, (this.width - getContentWidth()) / 2); }
+    private int getPanelLeft() { return getContentLeft() - 6; }
+    private int getPanelRight() { return getContentLeft() + getContentWidth() + 6; }
+    private int getPanelTop() { return getTabsY() + getTabHeight() + 8; }
+    private int getPanelBottom() { return this.height - 36; }
+
+    // Simple styled button for the tab strip
+    private static class TabButton extends ButtonWidget {
+        private final Category category;
+        private final ThreadiumSettingsScreen owner;
+
+        public TabButton(ThreadiumSettingsScreen owner, int x, int y, int width, int height, Category category, Text message, PressAction onPress) {
+            super(x, y, width, height, message, onPress, DEFAULT_NARRATION_SUPPLIER);
+            this.owner = owner;
+            this.category = category;
+        }
+
+        public void renderWidget(DrawContext context, int mouseX, int mouseY, float delta) {
+            boolean selected = owner.category == this.category;
+            int x = this.getX();
+            int y = this.getY();
+            int w = this.getWidth();
+            int h = this.getHeight();
+
+            int base = selected ? 0xFF2E2E2E : 0xFF1E1E1E; // darker background
+            int hover = selected ? 0xFF3A3A3A : 0xFF2A2A2A;
+            int border = selected ? 0xFF7ABFFF : 0xFF3A3A3A; // accent for selected
+            int fill = this.isMouseOver(mouseX, mouseY) ? hover : base;
+
+            // Button background
+            context.fill(x, y, x + w, y + h, fill);
+            // Top accent border for selected, subtle border otherwise
+            context.fill(x, y, x + w, y + 1, border);
+            context.fill(x, y + h - 1, x + w, y + h, 0xFF000000);
+            context.fill(x, y, x + 1, y + h, 0xFF000000);
+            context.fill(x + w - 1, y, x + w, y + h, 0xFF000000);
+
+            // Text
+            int color = 0xFFFFFF;
+            if (!this.active) color = 0xFF888888;
+            Text msg = this.getMessage();
+            int tw = owner.textRenderer.getWidth(msg);
+            context.drawText(owner.textRenderer, msg, x + (w - tw) / 2, y + (h - 8) / 2, color, false);
+        }
     }
 
     private class TargetFpsSlider extends SliderWidget {
@@ -162,21 +240,30 @@ public class ThreadiumSettingsScreen extends Screen {
     protected void init() {
         this.cfg = ThreadiumClient.CONFIG;
         
-        // Tabs
-        int tabsY = this.height / 6 - 8;
-        int center = this.width / 2;
-        int baseX = center - 260; // space for five tabs
-        addTab(baseX + 0, tabsY, 110, Category.ENTITIES, Text.translatable("threadium.settings.tab.entities").getString());
-        addTab(baseX + 130, tabsY, 110, Category.WORLD, Text.translatable("threadium.settings.tab.world").getString());
-        addTab(baseX + 260, tabsY, 110, Category.RENDER, Text.translatable("threadium.settings.tab.render").getString());
-        addTab(baseX + 390, tabsY, 110, Category.ADVANCED, Text.translatable("threadium.settings.tab.advanced").getString());
-        addTab(baseX + 520, tabsY, 110, Category.EXTRA, Text.translatable("threadium.settings.tab.extra").getString());
+        // Tabs (horizontal strip near top, dynamic sizing)
+        int tabsY = getTabsY();
+        int gap = getTabGap();
+        int count = Category.values().length;
+        int sidePad = 16;
+        int tabW = Math.max(68, Math.min(140, (this.width - (sidePad * 2) - (gap * (count - 1))) / count));
+        int tabH = getTabHeight();
+        int totalW = (tabW * count) + (gap * (count - 1));
+        int baseX = (this.width - totalW) / 2;
+        addTab(baseX + (tabW + gap) * 0, tabsY, tabW, tabH, Category.ENTITIES, Text.translatable("threadium.settings.tab.entities"));
+        addTab(baseX + (tabW + gap) * 1, tabsY, tabW, tabH, Category.WORLD, Text.translatable("threadium.settings.tab.world"));
+        addTab(baseX + (tabW + gap) * 2, tabsY, tabW, tabH, Category.RENDER, Text.translatable("threadium.settings.tab.render"));
+        addTab(baseX + (tabW + gap) * 3, tabsY, tabW, tabH, Category.PARTICLES, Text.literal("Particles"));
+        addTab(baseX + (tabW + gap) * 4, tabsY, tabW, tabH, Category.ADVANCED, Text.translatable("threadium.settings.tab.advanced"));
+        addTab(baseX + (tabW + gap) * 5, tabsY, tabW, tabH, Category.EXTRA, Text.translatable("threadium.settings.tab.extra"));
 
-        int left = this.width / 2 - 155;
-        int colW = 310;
-        int y = this.height / 6 + 24 - (int)scrollOffset;
-        int visibleTop = this.height / 6 + 20;
-        int visibleBottom = this.height - 40; // Leave space for Done button
+        // Content layout
+        int marginTop = getPanelTop();
+        int contentWidth = getContentWidth();
+        int left = getContentLeft();
+        int colW = contentWidth;
+        int y = marginTop - (int)scrollOffset;
+        int visibleTop = marginTop - 4;
+        int visibleBottom = getPanelBottom() - 8; // Leave space for Done button
 
         switch (category) {
             case ENTITIES -> {
@@ -314,6 +401,40 @@ public class ThreadiumSettingsScreen extends Screen {
                 y += 28;
                 addIfVisible(new QosAggressivenessSlider(left, y, colW, 20, (float)cfg.qosAggressiveness), y, 20, visibleTop, visibleBottom);
                 y += 28;
+            }
+            case PARTICLES -> {
+                // Global disable all particles
+                addIfVisible(ButtonWidget.builder(Text.of("Disable All Particles: " + (cfg.disableAllParticles ? "On" : "Off")), b -> {
+                    cfg.disableAllParticles = !cfg.disableAllParticles;
+                    b.setMessage(Text.of("Disable All Particles: " + (cfg.disableAllParticles ? "On" : "Off")));
+                    ThreadiumClient.saveConfig();
+                    this.clearAndInit();
+                }).tooltip(Tooltip.of(Text.of("Blocks all particle spawns when On")))
+                  .dimensions(left, y, colW, 20).build(), y, 20, visibleTop, visibleBottom);
+                y += 24;
+
+                // Individual particle toggles
+                for (Identifier id : Registries.PARTICLE_TYPE.getIds()) {
+                    String idStr = id.toString();
+                    String name = id.getPath().replace('_', ' ');
+                    name = name.substring(0, 1).toUpperCase() + name.substring(1);
+                    boolean disabled = cfg.disabledParticleIds.contains(idStr);
+                    Text label = Text.of(name + ": " + (disabled ? "Off" : "On"));
+                    String finalName = name;
+                    ButtonWidget.Builder builder = ButtonWidget.builder(label, b -> {
+                        if (cfg.disabledParticleIds.contains(idStr)) {
+                            cfg.disabledParticleIds.remove(idStr);
+                        } else {
+                            cfg.disabledParticleIds.add(idStr);
+                        }
+                        b.setMessage(Text.of(finalName + ": " + (cfg.disabledParticleIds.contains(idStr) ? "Off" : "On")));
+                        ThreadiumClient.saveConfig();
+                    }).tooltip(Tooltip.of(Text.of(idStr)));
+                    ButtonWidget btn = builder.dimensions(left, y, colW, 20).build();
+                    if (cfg.disableAllParticles) btn.active = false; // disabled by global
+                    addIfVisible(btn, y, 20, visibleTop, visibleBottom);
+                    y += 24;
+                }
             }
             case ADVANCED -> {
 
@@ -514,6 +635,13 @@ public class ThreadiumSettingsScreen extends Screen {
     }
     
     @Override
+    public void resize(MinecraftClient mc, int width, int height) {
+        // Reset scroll when the window size changes to avoid widgets going out of bounds
+        this.scrollOffset = 0.0;
+        super.resize(mc, width, height);
+    }
+    
+    @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double horizontalAmount, double verticalAmount) {
         // Scroll the content
         double newOffset = scrollOffset - (verticalAmount * SCROLL_SPEED);
@@ -576,8 +704,19 @@ public class ThreadiumSettingsScreen extends Screen {
         // Render background
         this.renderBackground(context, mouseX, mouseY, delta);
         
-        // Draw title
-        context.drawCenteredTextWithShadow(this.textRenderer, this.title, this.width / 2, 15, 0xFFFFFF);
+        // Header title
+        context.drawCenteredTextWithShadow(this.textRenderer, this.title, this.width / 2, 12, 0xFFFFFF);
+
+        // Content panel background
+        int panelTop = getPanelTop();
+        int panelBottom = getPanelBottom();
+        int panelLeft = getPanelLeft();
+        int panelRight = getPanelRight();
+        context.fill(panelLeft, panelTop, panelRight, panelBottom, 0x7F000000);
+        context.fill(panelLeft, panelTop, panelRight, panelTop + 1, 0xFF000000);
+        context.fill(panelLeft, panelBottom - 1, panelRight, panelBottom, 0xFF000000);
+        context.fill(panelLeft, panelTop, panelLeft + 1, panelBottom, 0xFF000000);
+        context.fill(panelRight - 1, panelTop, panelRight, panelBottom, 0xFF000000);
         
         // Render widgets
         super.render(context, mouseX, mouseY, delta);
@@ -589,13 +728,19 @@ public class ThreadiumSettingsScreen extends Screen {
     }
     
     private void drawScrollbar(DrawContext context) {
-        int scrollbarX = this.width - 10;
-        int scrollbarY = this.height / 6 + 20;
-        int scrollbarHeight = this.height - scrollbarY - 40;
-        
+        // Match content panel geometry from render()
+        int panelTop = getPanelTop();
+        int panelBottom = getPanelBottom();
+        int panelLeft = getPanelLeft();
+        int panelRight = getPanelRight();
+
+        int scrollbarX = panelRight - 10; // inside panel
+        int scrollbarY = panelTop;
+        int scrollbarHeight = panelBottom - panelTop;
+
         // Background track
         context.fill(scrollbarX, scrollbarY, scrollbarX + 6, scrollbarY + scrollbarHeight, 0x80000000);
-        
+
         // Calculate thumb position and size
         double contentHeight = maxScroll + scrollbarHeight;
         double thumbHeight = Math.max(20, scrollbarHeight * scrollbarHeight / contentHeight);
@@ -620,13 +765,13 @@ public class ThreadiumSettingsScreen extends Screen {
         }
     }
 
-    private void addTab(int x, int y, int w, Category cat, String label) {
-        Text text = Text.of((this.category == cat ? "> " : "") + label);
-        this.addDrawableChild(ButtonWidget.builder(text, b -> {
+    private void addTab(int x, int y, int w, int h, Category cat, Text label) {
+        Text text = label;
+        this.addDrawableChild(new TabButton(this, x, y, w, h, cat, text, b -> {
             this.category = cat;
             this.scrollOffset = 0.0; // Reset scroll when changing tabs
             this.clearAndInit();
-        }).dimensions(x, y, w, 20).build());
+        }));
     }
 
     private Text entityCullingLabel() {

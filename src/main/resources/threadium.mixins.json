@@ -12,7 +12,8 @@
 		"render.FrustumMixin",
 		"render.WorldRendererMixin",
 		"render.WorldRendererAccessor",
-		"render.particles.ParticleManagerMixin"
+		"render.particles.ParticleManagerMixin",
+		"render.particles.ClientWorldMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1

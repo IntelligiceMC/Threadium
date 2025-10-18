@@ -26,9 +26,11 @@ public class WorldRendererMixin {
 
     @Inject(method = "scheduleBlockRerenderIfNeeded", at = @At("HEAD"), cancellable = true)
     private void threadium$deferRerenderIfOccluded(BlockPos pos, BlockState oldState, BlockState newState, CallbackInfo ci) {
-        // Track dirty slice and maintain non-air counts
+        // Track dirty slice and maintain pending sections
         SubIdentifierManager.get().onBlockStateChanged(pos, oldState.isAir(), newState.isAir());
-        ThreadiumLog.debug("Block state changed at %s: %s -> %s", pos, oldState, newState);
+        if (ThreadiumClient.CONFIG != null && ThreadiumClient.CONFIG.verboseLogging && ThreadiumLog.isVerbose()) {
+            ThreadiumLog.debug("Block state changed at %s: %s -> %s", pos, oldState, newState);
+        }
 
         MinecraftClient mc = MinecraftClient.getInstance();
         if (mc == null || mc.getCameraEntity() == null) return;
@@ -51,7 +53,9 @@ public class WorldRendererMixin {
 
         if (culledBehind || tooFar) {
             // Defer render until visible; our tick hook will reschedule later
-            ThreadiumLog.debug("Deferred block rerender at %s (culledBehind=%s, tooFar=%s)", pos, culledBehind, tooFar);
+            if (ThreadiumLog.isVerbose()) {
+                ThreadiumLog.debug("Deferred block rerender at %s (culledBehind=%s, tooFar=%s)", pos, culledBehind, tooFar);
+            }
             ci.cancel();
         }
     }
@@ -78,8 +82,10 @@ public class WorldRendererMixin {
         boolean tooFar = target.distanceTo(camPos) > farCutoff;
 
         if (culledBehind || tooFar) {
-            ThreadiumLog.debug("Cancelled section render at %s (culledBehind=%s, tooFar=%s, distance=%.1f)",
-                    pos, culledBehind, tooFar, target.distanceTo(camPos));
+            if (ThreadiumLog.isVerbose()) {
+                ThreadiumLog.debug("Cancelled section render at %s (culledBehind=%s, tooFar=%s, distance=%.1f)",
+                        pos, culledBehind, tooFar, target.distanceTo(camPos));
+            }
             ci.cancel();
         }
     }

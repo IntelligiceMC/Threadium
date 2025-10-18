@@ -3,6 +3,8 @@ package com.itarqos.threadium.config;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.itarqos.threadium.util.ThreadiumLog;
+import java.util.HashSet;
+import java.util.Set;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -78,6 +80,10 @@ import java.nio.file.Path;
     public boolean enableParticleTileBudget = true;           // limit spawns per screen-space tile per tick
     public int particleTileBudget = 6;                         // allowed particles per tile per tick (scaled by QoS)
     public int particleTileSize = 32;                          // approximate world-space tile size used for bucketing
+
+    // Particle filtering (GUI-driven)
+    public boolean disableAllParticles = false;                // when true, block all particle spawns
+    public Set<String> disabledParticleIds = new HashSet<>();  // registry ids of particles to block individually
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Path CONFIG_PATH = Path.of("config", "threadium.json");

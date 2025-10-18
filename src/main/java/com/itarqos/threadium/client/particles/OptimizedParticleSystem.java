@@ -37,6 +37,10 @@ public final class OptimizedParticleSystem {
 
     public void spawn(Vec3d pos, Vec3d vel, int lifetime, float size,
                       float r, float g, float b, float a, int textureIndex) {
+        // Global disable check
+        if (ThreadiumClient.CONFIG != null && ThreadiumClient.CONFIG.disableAllParticles) {
+            return;
+        }
         // Micro-stutter guard: drop optional work if last frame was long
         if (ThreadiumClient.CONFIG != null && ThreadiumClient.CONFIG.enableMicroStutterGuard && FrameBudgetController.get().wasLongFrame()) {
             return;

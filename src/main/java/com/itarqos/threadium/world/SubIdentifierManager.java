@@ -29,9 +29,8 @@ public final class SubIdentifierManager {
     public static SubIdentifierManager get() { return INSTANCE; }
 
     private final Map<ChunkId, BitSet> dirtySlices = new HashMap<>(); // 4 slices per chunk (0..3)
-    private final Map<ChunkId, int[]> sliceNonAirCounts = new HashMap<>(); // 4-length arrays
-    // For each chunk, maintain per-slice (0..3) set of valid (non-air) blocks within that slice
-    private final Map<ChunkId, java.util.HashSet<Long>[]> sliceValidBlocks = new HashMap<>();
+    // For each chunk, maintain per-slice (0..3) set of pending section-origins (as long) that must be scheduled
+    private final Map<ChunkId, java.util.HashSet<Long>[]> slicePendingSections = new HashMap<>();
     private final Map<SectionKey, Long> lastScheduledMs = new HashMap<>();
 
     // Visibility cache & gradual unhide state
@@ -47,6 +46,14 @@ public final class SubIdentifierManager {
         ChunkId id = new ChunkId(cp.x, cp.z);
         int slice = SliceIndexing.computeSliceIndex(pos);
         dirtySlices.computeIfAbsent(id, k -> new BitSet(4)).set(slice);
+        java.util.HashSet<Long>[] arr = slicePendingSections.computeIfAbsent(id, k -> {
+            @SuppressWarnings("unchecked")
+            java.util.HashSet<Long>[] a = new java.util.HashSet[4];
+            return a;
+        });
+        if (arr[slice] == null) arr[slice] = new java.util.HashSet<>();
+        long origin = BlockPos.asLong((pos.getX() >> 4) << 4, (pos.getY() >> 4) << 4, (pos.getZ() >> 4) << 4);
+        arr[slice].add(origin);
     }
 
     // Called from mixin when old/new states are known
@@ -55,31 +62,20 @@ public final class SubIdentifierManager {
         ChunkId id = new ChunkId(cp.x, cp.z);
         int slice = SliceIndexing.computeSliceIndex(pos);
         dirtySlices.computeIfAbsent(id, k -> new BitSet(4)).set(slice);
-        int[] counts = sliceNonAirCounts.computeIfAbsent(id, k -> new int[4]);
-        if (oldWasAir && !newIsAir) {
-            counts[slice] = Math.max(0, counts[slice] + 1);
-            // track valid (non-air) block inside this slice
-            java.util.HashSet<Long>[] arr = sliceValidBlocks.computeIfAbsent(id, k -> {
-                @SuppressWarnings("unchecked")
-                java.util.HashSet<Long>[] a = new java.util.HashSet[4];
-                return a;
-            });
-            if (arr[slice] == null) arr[slice] = new java.util.HashSet<>();
-            arr[slice].add(BlockPos.asLong(pos.getX(), pos.getY(), pos.getZ()));
-        } else if (!oldWasAir && newIsAir) {
-            counts[slice] = Math.max(0, counts[slice] - 1);
-            java.util.HashSet<Long>[] arr = sliceValidBlocks.get(id);
-            if (arr != null && arr[slice] != null) {
-                arr[slice].remove(BlockPos.asLong(pos.getX(), pos.getY(), pos.getZ()));
-            }
-        }
+        // Always track section-origin as pending; even if a block was placed then removed quickly,
+        // we still need to rebuild the section once to reflect changes.
+        java.util.HashSet<Long>[] arr = slicePendingSections.computeIfAbsent(id, k -> {
+            @SuppressWarnings("unchecked")
+            java.util.HashSet<Long>[] a = new java.util.HashSet[4];
+            return a;
+        });
+        if (arr[slice] == null) arr[slice] = new java.util.HashSet<>();
+        long origin = BlockPos.asLong((pos.getX() >> 4) << 4, (pos.getY() >> 4) << 4, (pos.getZ() >> 4) << 4);
+        arr[slice].add(origin);
     }
 
     private boolean isSliceEmpty(ChunkId id, int slice) {
-        int[] counts = sliceNonAirCounts.get(id);
-        if (counts == null) return false; // unknown -> assume non-empty to be safe
-        if (counts[slice] > 0) return false;
-        java.util.HashSet<Long>[] arr = sliceValidBlocks.get(id);
+        java.util.HashSet<Long>[] arr = slicePendingSections.get(id);
         if (arr == null || arr[slice] == null) return true;
         return arr[slice].isEmpty();
     }
@@ -126,22 +122,20 @@ public final class SubIdentifierManager {
                 ChunkId id = e.getKey();
                 BitSet bits = e.getValue();
                 if (bits.isEmpty()) { itAll.remove(); continue; }
-                java.util.HashSet<Long>[] arr = sliceValidBlocks.get(id);
+                java.util.HashSet<Long>[] arr = slicePendingSections.get(id);
                 for (int slice = bits.nextSetBit(0); slice >= 0; slice = bits.nextSetBit(slice + 1)) {
-                    // dedupe to section origins and schedule all
-                    java.util.LinkedHashSet<BlockPos> sectionOrigins = new java.util.LinkedHashSet<>();
                     if (arr != null && arr[slice] != null) {
                         for (long lp : arr[slice]) {
-                            BlockPos bp = BlockPos.fromLong(lp);
-                            BlockPos origin = new BlockPos((bp.getX() >> 4) << 4, (bp.getY() >> 4) << 4, (bp.getZ() >> 4) << 4);
-                            sectionOrigins.add(origin);
+                            BlockPos origin = BlockPos.fromLong(lp);
+                            ((WorldRendererAccessor) wr).threadium$invokeScheduleSectionRender(origin, false);
+                            CullingStats.incSliceFlushed();
                         }
-                    }
-                    for (BlockPos origin : sectionOrigins) {
-                        ((WorldRendererAccessor) wr).threadium$invokeScheduleSectionRender(origin, false);
-                        CullingStats.incSliceFlushed();
+                        // clear per-slice pending after scheduling all
+                        arr[slice].clear();
                     }
                 }
+                // clear entire chunk entry after flushing
+                slicePendingSections.remove(id);
                 itAll.remove();
             }
             return;
@@ -253,17 +247,12 @@ public final class SubIdentifierManager {
                     long hiddenFor = frameCounter - lastSeen;
                     if (useGradual && hiddenFor >= threshold) {
                         // Convert slice's valid blocks into unique section origins and queue them
-                        java.util.HashSet<Long>[] arr = sliceValidBlocks.get(id);
-                        java.util.LinkedHashSet<BlockPos> sectionOrigins = new java.util.LinkedHashSet<>();
+                        java.util.HashSet<Long>[] arr = slicePendingSections.get(id);
                         if (arr != null && arr[slice] != null) {
                             for (long lp : arr[slice]) {
-                                BlockPos bp = BlockPos.fromLong(lp);
-                                BlockPos origin = new BlockPos((bp.getX() >> 4) << 4, (bp.getY() >> 4) << 4, (bp.getZ() >> 4) << 4);
-                                sectionOrigins.add(origin);
+                                BlockPos origin = BlockPos.fromLong(lp);
+                                pendingUnhide.addLast(origin);
                             }
-                        }
-                        for (BlockPos origin : sectionOrigins) {
-                            pendingUnhide.addLast(origin);
                         }
                         bits.clear(slice);
                         // we've enqueued work; clear tracked set for this slice
@@ -294,30 +283,25 @@ public final class SubIdentifierManager {
             for (int i = 0; i < candidates.size() && scheduled < sliceBudget; i++) {
                 Cand c = candidates.get(i);
                 // Convert this slice's tracked valid blocks into unique section origins
-                java.util.HashSet<Long>[] arr = sliceValidBlocks.get(c.id);
-                java.util.LinkedHashSet<BlockPos> sectionOrigins = new java.util.LinkedHashSet<>();
+                java.util.HashSet<Long>[] arr = slicePendingSections.get(c.id);
                 if (arr != null && arr[c.slice] != null) {
-                    for (long lp : arr[c.slice]) {
-                        BlockPos bp = BlockPos.fromLong(lp);
-                        BlockPos origin = new BlockPos((bp.getX() >> 4) << 4, (bp.getY() >> 4) << 4, (bp.getZ() >> 4) << 4);
-                        sectionOrigins.add(origin);
+                    java.util.Iterator<Long> itL = arr[c.slice].iterator();
+                    while (itL.hasNext() && scheduled < sliceBudget) {
+                        long lp = itL.next();
+                        BlockPos origin = BlockPos.fromLong(lp);
+                        ((WorldRendererAccessor) wr).threadium$invokeScheduleSectionRender(origin, false);
+                        CullingStats.incSliceFlushed();
+                        scheduled++;
+                        // remove scheduled origin from pending set
+                        itL.remove();
                     }
-                }
-                // Schedule within remaining budget
-                java.util.Iterator<BlockPos> itSec = sectionOrigins.iterator();
-                while (itSec.hasNext() && scheduled < sliceBudget) {
-                    BlockPos origin = itSec.next();
-                    ((WorldRendererAccessor) wr).threadium$invokeScheduleSectionRender(origin, false);
-                    CullingStats.incSliceFlushed();
-                    scheduled++;
-                }
-                // Clear this slice's dirty bit and tracked blocks if all scheduled; otherwise keep dirty for next tick
-                if (!itSec.hasNext()) {
-                    BitSet bits = dirtySlices.get(c.id);
-                    if (bits != null) {
-                        bits.clear(c.slice);
+                    // Clear this slice's dirty bit if nothing pending remains
+                    if (arr[c.slice].isEmpty()) {
+                        BitSet bits = dirtySlices.get(c.id);
+                        if (bits != null) {
+                            bits.clear(c.slice);
+                        }
                     }
-                    if (arr != null && arr[c.slice] != null) arr[c.slice].clear();
                 }
             }
         }
@@ -350,8 +334,7 @@ public final class SubIdentifierManager {
     public void onChunkUnload(ChunkPos pos) {
         ChunkId id = ChunkId.of(pos);
         dirtySlices.remove(id);
-        sliceNonAirCounts.remove(id);
-        sliceValidBlocks.remove(id);
+        slicePendingSections.remove(id);
         // prune any debounced keys that belong to this chunk
         lastScheduledMs.entrySet().removeIf(entry -> {
             SectionKey k = entry.getKey();
@@ -370,8 +353,7 @@ public final class SubIdentifierManager {
      */
     public void onWorldReset() {
         dirtySlices.clear();
-        sliceNonAirCounts.clear();
-        sliceValidBlocks.clear();
+        slicePendingSections.clear();
         lastScheduledMs.clear();
         lastVisibleFrame.clear();
         pendingUnhide.clear();
